@@ -40,16 +40,27 @@ class EggplantDataset(Dataset):
     """
     Dataset đọc ảnh từ danh sách đường dẫn, áp dụng Albumentations transform.
 
+    Hỗ trợ **Targeted Augmentation**: chỉ các class thiểu số mới nhận
+    augmentation mạnh, các class còn lại chỉ nhận transform cơ bản.
+
     Args:
         image_paths (list[str | Path]): Đường dẫn tới từng ảnh.
         labels (list[int]): Nhãn tương ứng (class index).
-        transform (albumentations.Compose | None): Pipeline augmentation.
+        transform (albumentations.Compose | None): Pipeline augmentation cơ bản
+            (dùng cho class thường hoặc val/test).
+        strong_transform (albumentations.Compose | None): Pipeline augmentation mạnh
+            (chỉ dùng cho class thiểu số khi training).
+        minority_indices (set[int] | None): Tập hợp các class index được áp dụng
+            strong_transform. Ví dụ: {4, 5} cho White_mold_disease, wilt_disease.
     """
 
-    def __init__(self, image_paths, labels, transform=None):
+    def __init__(self, image_paths, labels, transform=None,
+                 strong_transform=None, minority_indices=None):
         self.image_paths = [str(p) for p in image_paths]
         self.labels = labels
         self.transform = transform
+        self.strong_transform = strong_transform
+        self.minority_indices = minority_indices or set()
 
     def __len__(self):
         return len(self.image_paths)
@@ -65,9 +76,15 @@ class EggplantDataset(Dataset):
 
         label = self.labels[idx]
 
-        if self.transform:
+        # Targeted Augmentation: class thiểu số → strong, còn lại → weak
+        if self.strong_transform and label in self.minority_indices:
+            augmented = self.strong_transform(image=image)
+        elif self.transform:
             augmented = self.transform(image=image)
-            image = augmented["image"]
+        else:
+            augmented = {"image": image}
+
+        image = augmented["image"]
 
         return image, label
 
@@ -75,10 +92,16 @@ class EggplantDataset(Dataset):
 # ---------------------------------------------------------------------------
 # 2. Augmentation Pipelines
 # ---------------------------------------------------------------------------
-def get_train_transforms(image_size: int = 224) -> A.Compose:
+
+# --- Danh sách class thiểu số cần augmentation mạnh ---
+MINORITY_CLASS_NAMES = {"White_mold_disease", "wilt_disease"}
+
+
+def get_base_train_transforms(image_size: int = 224) -> A.Compose:
     """
-    Augmentation mạnh dành cho tập Train.
-    Bao gồm CLAHE để làm rõ vết bệnh trên lá.
+    Transform CƠ BẢN cho class đa số trong tập Train.
+    Chỉ có RandomResizedCrop + HorizontalFlip + Normalize.
+    KHÔNG áp dụng augmentation nặng.
 
     Returns:
         albumentations.Compose pipeline.
@@ -86,34 +109,68 @@ def get_train_transforms(image_size: int = 224) -> A.Compose:
     return A.Compose([
         A.RandomResizedCrop(
             size=(image_size, image_size),
-            scale=(0.7, 1.0),
+            scale=(0.8, 1.0),
             ratio=(0.9, 1.1),
             p=1.0
         ),
         A.HorizontalFlip(p=0.5),
-        A.VerticalFlip(p=0.2),
-        A.RandomRotate90(p=0.3),
-        A.ShiftScaleRotate(shift_limit=0.1, scale_limit=0.15, rotate_limit=30, p=0.4),
+        A.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225],
+        ),
+        ToTensorV2(),
+    ])
+
+
+def get_strong_transforms(image_size: int = 224) -> A.Compose:
+    """
+    Augmentation MẠNH — CHỈ dành cho class thiểu số
+    (White_mold_disease, wilt_disease).
+
+    Bao gồm CLAHE, màu sắc, méo hình, noise, dropout để tạo
+    sự đa dạng tối đa cho các class ít mẫu.
+
+    Returns:
+        albumentations.Compose pipeline.
+    """
+    return A.Compose([
+        A.RandomResizedCrop(
+            size=(image_size, image_size),
+            scale=(0.6, 1.0),       # Crop mạnh hơn base
+            ratio=(0.85, 1.15),
+            p=1.0
+        ),
+        A.HorizontalFlip(p=0.5),
+        A.VerticalFlip(p=0.3),
+        A.RandomRotate90(p=0.4),
+        A.ShiftScaleRotate(shift_limit=0.15, scale_limit=0.2, rotate_limit=45, p=0.5),
         A.RandomBrightnessContrast(
-            brightness_limit=0.2,
-            contrast_limit=0.2,
-            p=0.5
+            brightness_limit=0.3,
+            contrast_limit=0.3,
+            p=0.6
         ),
         A.HueSaturationValue(
-            hue_shift_limit=15,
-            sat_shift_limit=25,
-            val_shift_limit=15,
-            p=0.4
+            hue_shift_limit=20,
+            sat_shift_limit=30,
+            val_shift_limit=20,
+            p=0.5
         ),
-        A.GaussianBlur(blur_limit=(3, 5), p=0.2),
-        A.CLAHE(clip_limit=2.0, tile_grid_size=(8, 8), p=0.3),
-        A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.2),
+        A.OneOf([
+            A.GaussianBlur(blur_limit=(3, 7), p=1.0),
+            A.GaussNoise(std_range=(0.03, 0.08), p=1.0),
+        ], p=0.3),
+        A.CLAHE(clip_limit=3.0, tile_grid_size=(8, 8), p=0.4),
+        A.OneOf([
+            A.GridDistortion(num_steps=5, distort_limit=0.3, p=1.0),
+            A.ElasticTransform(alpha=1.0, sigma=50, p=1.0),
+            A.OpticalDistortion(distort_limit=0.3, shift_limit=0.1, p=1.0),
+        ], p=0.3),
         A.CoarseDropout(
             num_holes_range=(1, 8),
             hole_height_range=(8, 32),
             hole_width_range=(8, 32),
             fill=0,
-            p=0.3,
+            p=0.4,
         ),
         A.Normalize(
             mean=[0.485, 0.456, 0.406],
@@ -310,12 +367,36 @@ def create_dataloaders(data_dir, batch_size=32, num_workers=2, seed=42):
         cnt = int((train_labels_arr == i).sum())
         print(f"  {name:30s}: {cnt:>5}")
 
+    # --- Xác định class thiểu số (Targeted Augmentation) ---
+    minority_indices = set()
+    for i, name in enumerate(class_names):
+        if name in MINORITY_CLASS_NAMES:
+            minority_indices.add(i)
+
+    print(f"\n[DATA] Targeted Augmentation:")
+    if minority_indices:
+        for idx in minority_indices:
+            cnt = int((train_labels_arr == idx).sum())
+            print(f"  ★ {class_names[idx]:30s}: {cnt:>5} images → Strong Augmentation")
+        majority = set(range(num_classes)) - minority_indices
+        for idx in sorted(majority):
+            cnt = int((train_labels_arr == idx).sum())
+            print(f"    {class_names[idx]:30s}: {cnt:>5} images → Base Transform")
+    else:
+        print("  (Không tìm thấy class thiểu số trong danh sách)")
+
     # --- Transforms ---
-    train_tf = get_train_transforms(224)
+    base_train_tf = get_base_train_transforms(224)
+    strong_train_tf = get_strong_transforms(224)
     val_test_tf = get_val_test_transforms(224)
 
     # --- Datasets ---
-    train_dataset = EggplantDataset(train_paths, train_labels, transform=train_tf)
+    train_dataset = EggplantDataset(
+        train_paths, train_labels,
+        transform=base_train_tf,              # Class đa số
+        strong_transform=strong_train_tf,     # Class thiểu số
+        minority_indices=minority_indices,
+    )
     val_dataset = EggplantDataset(val_paths, val_labels, transform=val_test_tf)
     test_dataset = EggplantDataset(test_paths, test_labels, transform=val_test_tf)
 

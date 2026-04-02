@@ -84,10 +84,6 @@ def parse_args():
         help="Early stopping patience (epochs without improvement). 0 = disabled.",
     )
     parser.add_argument(
-        "--es_min_delta", type=float, default=1e-4,
-        help="Minimum improvement delta for early stopping.",
-    )
-    parser.add_argument(
         "--loss", type=str, default="ce", choices=["ce", "focal"],
         help="Loss function: 'ce' (CrossEntropyLoss) or 'focal' (FocalLoss).",
     )
@@ -241,7 +237,6 @@ def main():
     if args.patience > 0:
         early_stopper = EarlyStopping(
             patience=args.patience,
-            min_delta=args.es_min_delta,
             mode="max",  # Theo dõi Val F1 (higher is better)
             warmup_epochs=args.warmup_epochs,
         )

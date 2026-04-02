@@ -77,9 +77,10 @@ class EarlyStopping:
     Chỉ active sau giai đoạn Warmup (Stage 1) để tránh dừng sớm
     khi backbone vẫn đang frozen.
 
+    Bất kỳ sự cải thiện nào (dù rất nhỏ) cũng được tính là tiến bộ.
+
     Args:
         patience (int): Số epoch chờ không cải thiện trước khi dừng.
-        min_delta (float): Ngưỡng cải thiện tối thiểu.
         mode (str): 'max' (F1, Accuracy) hoặc 'min' (Loss).
         warmup_epochs (int): Số epoch warmup — bỏ qua early stopping trong giai đoạn này.
     """
@@ -87,12 +88,10 @@ class EarlyStopping:
     def __init__(
         self,
         patience: int = 7,
-        min_delta: float = 1e-4,
         mode: str = "max",
         warmup_epochs: int = 5,
     ):
         self.patience = patience
-        self.min_delta = min_delta
         self.mode = mode
         self.warmup_epochs = warmup_epochs
 
@@ -100,16 +99,15 @@ class EarlyStopping:
         self.best_score = None
         self.early_stop = False
 
-        # Hàm so sánh dựa trên mode
+        # Hàm so sánh dựa trên mode (không dùng min_delta)
         if mode == "max":
-            self._is_improvement = lambda curr, best: curr > best + min_delta
+            self._is_improvement = lambda curr, best: curr > best
         else:
-            self._is_improvement = lambda curr, best: curr < best - min_delta
+            self._is_improvement = lambda curr, best: curr < best
 
         print(
             f"[UTIL] EarlyStopping: patience={patience}, "
-            f"min_delta={min_delta}, mode={mode}, "
-            f"active_after_epoch={warmup_epochs}"
+            f"mode={mode}, active_after_epoch={warmup_epochs}"
         )
 
     def __call__(self, epoch: int, metric_value: float) -> bool:
