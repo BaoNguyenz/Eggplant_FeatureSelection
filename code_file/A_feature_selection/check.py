@@ -1,0 +1,10 @@
+import pandas as pd
+df = pd.read_csv(r"E:\PROJECTWORSHOP\Eggplant_regconition\code_file\A_feature_selection\output_csv\importance_scores.csv")
+total = len(df)
+pos = (df["importance"] > 0).sum()
+zero = (df["importance"] == 0).sum()
+print(f"Total features: {total}")
+print(f"Features > 0: {pos}")
+print(f"Features = 0: {zero}")
+print(f"Min importance: {df['importance'].min()}")
+print(f"Max importance: {df['importance'].max()}")
